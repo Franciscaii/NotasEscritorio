@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>NotasEscritorio</AssemblyName>
+    <RootNamespace>NotasEscritorio</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <Product>Notas Escritorio</Product>
+    <Version>1.0.0</Version>
+
+    <!-- Un solo .exe que funciona sin instalar nada más -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WPF + Windows Forms (para el icono de la bandeja) -->
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
+    <EmbeddedResource Include="app.ico" LogicalName="app.ico" />
+  </ItemGroup>
+
+</Project>
