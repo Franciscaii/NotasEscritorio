@@ -349,7 +349,7 @@ namespace NotasEscritorio
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="MenuItem">
-          <Border x:Name="Bd" Background="Transparent" CornerRadius="6" Padding="8,7,12,7" MinWidth="190">
+          <Border x:Name="Bd" Background="Transparent" CornerRadius="6" Padding="8,7,12,7" MinWidth="150">
             <Grid>
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="26"/>
@@ -663,6 +663,8 @@ namespace NotasEscritorio
         public const int WM_DPICHANGED = 0x02E0;
         public const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002, SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010;
         public static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
+        public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+        public static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
         public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_DONOTROUND = 1;
 
         [StructLayout(LayoutKind.Sequential)]
@@ -755,7 +757,7 @@ namespace NotasEscritorio
             if (!IsVisible) { Show(); AttachToDesktop(); Reposition(); }
             _raise = true;
             if (_hwnd != IntPtr.Zero)
-                Native.SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE);
+                Native.SetWindowPos(_hwnd, Native.HWND_TOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE);
             Activate();
             _fgBaseline = IntPtr.Zero;
             _raiseWatch ??= new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Background, (s, e) => WatchForeground(), Dispatcher);
@@ -769,7 +771,29 @@ namespace NotasEscritorio
         {
             _raise = false;
             _raiseWatch?.Stop();
+            if (_hwnd != IntPtr.Zero)
+                Native.SetWindowPos(_hwnd, Native.HWND_NOTOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
             SendToBottom();
+        }
+
+        // v41: al cerrar un menú o diálogo, Windows puede activar otra app (p. ej. el navegador) y el panel quedaba detrás.
+        // Tras cerrarlos se vuelve a traer el panel y, durante un momento, no se lo manda al fondo.
+        DateTime _noLowerUntil = DateTime.MinValue;
+
+        void AfterPopup()
+        {
+            if (!_raise) return;
+            _noLowerUntil = DateTime.Now.AddSeconds(1.5);
+            Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(RaiseIfNeeded));
+        }
+
+        void KeepRaised(ContextMenu m) => m.Closed += (s, e) => AfterPopup();
+
+        bool? ShowAndKeep(Window w)
+        {
+            bool? r = w.ShowDialog();
+            AfterPopup();
+            return r;
         }
 
         void WatchForeground()
@@ -778,7 +802,8 @@ namespace NotasEscritorio
             var fg = Native.GetForegroundWindow();
             if (_fgBaseline == IntPtr.Zero) { _fgBaseline = fg == IntPtr.Zero ? new IntPtr(-1) : fg; return; }
             if (fg == _fgBaseline || fg == IntPtr.Zero || IsOwnWindow(fg) || IsTaskbar(fg)) return;
-            LowerPanel(); // el usuario pasó a otra ventana
+            // v42: ya no se baja al fondo por cambios de foco (un menú o un tema lo hacía). Solo vuelve al fondo con un segundo clic en el icono.
+            return;
         }
 
         static bool IsOwnWindow(IntPtr h)
@@ -976,6 +1001,7 @@ namespace NotasEscritorio
 
         void SendToBottom()
         {
+            if (_raise) return; // v40: si el panel está al frente, no se manda al fondo
             if (_hwnd != IntPtr.Zero)
                 Native.SetWindowPos(_hwnd, Native.HWND_BOTTOM, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
         }
@@ -1051,7 +1077,7 @@ namespace NotasEscritorio
             if (_railHolder != null)
             {
                 bool railLeft = _cfg.Side != "izquierda";
-                _railHolder.Margin = bar ? new Thickness(10, 2, 10, 10) : railLeft ? new Thickness(5, 2, 0, 10) : new Thickness(0, 2, 5, 10);
+                _railHolder.Margin = bar ? new Thickness(10, 0, 10, 10) : railLeft ? new Thickness(5, 0, 0, 10) : new Thickness(0, 0, 5, 10);
             }
             if (_captionBar != null)
             {
@@ -1077,7 +1103,8 @@ namespace NotasEscritorio
         protected override void OnActivated(EventArgs e)
         {
             base.OnActivated(e);
-            SendToBottom();
+            // v33: si el usuario lo trajo al frente, no lo mandamos al fondo al volver a activarse (p. ej. al cerrar un diálogo)
+            if (!_raise) SendToBottom();
         }
 
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
@@ -1110,7 +1137,8 @@ namespace NotasEscritorio
         Theme T => Themes.FirstOrDefault(t => t.Key == _cfg.Theme) ?? Themes[0];
 
         /// Hace falta una ventana con transparencia (tema Vidrio o algún opacidad menor de 100 %)
-        bool WantsLayered => IsGlass(T) || _cfg.PanelOpacity < 0.999 || _cfg.NoteOpacity < 0.999;
+        // v31: siempre con ventana transparente, así el deslizador se aplica al instante y ya no hay reinicio al cambiar la transparencia
+        bool WantsLayered => true;
         readonly List<Action> _panelOpacityUpdaters = new();
         readonly Dictionary<Note, Action> _noteOpacityUpdaters = new();
 
@@ -1142,11 +1170,13 @@ namespace NotasEscritorio
             _search.Text = q;
             Reposition();
             Rebuild();
+            RaiseIfNeeded();
         }
 
         void ShowThemeMenu(UIElement anchor)
         {
             var menu = new ContextMenu { PlacementTarget = anchor, Placement = RailMenuPlacement };
+            KeepRaised(menu);
             foreach (var th in Themes)
             {
                 var sp = new StackPanel { Orientation = Orientation.Horizontal };
@@ -1242,7 +1272,7 @@ namespace NotasEscritorio
             Border CapBtn(string glyph, string tip, Action click, bool danger = false)
             {
                 var g = new TextBlock { Text = glyph, FontFamily = IconFont, FontSize = 10, Foreground = B(th.Fg), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-                var b = new Border { Child = g, Width = 42, Height = 28, Background = Brushes.Transparent, ToolTip = tip };
+                var b = new Border { Child = g, Width = 42, Height = 22, Background = Brushes.Transparent, ToolTip = tip };
                 b.MouseEnter += (o, e) => { b.Background = danger ? B("#C42B1C") : B(th.Hover); if (danger) g.Foreground = Brushes.White; };
                 b.MouseLeave += (o, e) => { b.Background = Brushes.Transparent; g.Foreground = B(th.Fg); };
                 b.MouseLeftButtonUp += (o, e) => { click(); e.Handled = true; };
@@ -1435,7 +1465,7 @@ namespace NotasEscritorio
 
             // Crear / abrir (la tuerca de opciones va arriba)
             top.Children.Add(RailBtn(Ic(""), "Opciones", b => ShowOptionsMenu(b)));
-            top.Children.Add(RailBtn(Ic(""), "Nueva lista de tareas", b => NewNote("lista")));
+            // v37: se quitó "Nueva lista de tareas" (las casillas están en el menú de listas)
             top.Children.Add(RailBtn(Ic(""), "Abrir archivos .txt (Ctrl+O)", b => OpenFiles()));
             top.Children.Add(Sep());
 
@@ -1445,10 +1475,10 @@ namespace NotasEscritorio
                 ("Título 1", () => SetHeading(1)),
                 ("Título 2", () => SetHeading(2)),
                 ("Título 3", () => SetHeading(3)))));
-            top.Children.Add(RailBtn(Ic(""), "Listas", b => DropDown(b,
-                ("Viñetas", () => SetList("bullet")),
-                ("Lista numerada", () => SetList("number")),
-                ("Casillas", () => SetList("check")))));
+            top.Children.Add(RailBtn(Ic(""), "Listas", b => DropDownRich(b,
+                (ListHeader("•", "Viñetas"), () => SetList("bullet")),
+                (ListHeader("1.", "Lista numerada"), () => SetList("number")),
+                (ListHeader("☐", "Casillas"), () => SetList("check")))));
             top.Children.Add(RailBtn(Tx("B", FontWeights.Bold), "Negrita (Ctrl+B)", b => WrapSelection("**")));
             top.Children.Add(RailBtn(Tx("I", st: FontStyles.Italic, ff: new FontFamily("Georgia")), "Cursiva (Ctrl+I)", b => WrapSelection("*")));
             top.Children.Add(RailBtn(Tx("S", deco: TextDecorations.Strikethrough), "Tachado", b => WrapSelection("~~")));
@@ -1775,9 +1805,37 @@ namespace NotasEscritorio
         // Un .txt no guarda estilos, así que el formato se escribe con marcas de texto (Markdown):
         // # Título, - viñeta, 1. numerada, - [ ] casilla, **negrita**, *cursiva*, ~~tachado~~, [texto](enlace), | tabla |
 
+        // v38: menú de listas con un ícono de muestra antes de cada opción
+        static UIElement ListHeader(string marker, string label)
+        {
+            var sp = new StackPanel { Orientation = Orientation.Horizontal };
+            sp.Children.Add(new TextBlock
+            {
+                Text = marker, Width = 20, FontSize = 14, FontWeight = FontWeights.SemiBold,
+                FontFamily = new FontFamily("Segoe UI Symbol, Segoe UI"), VerticalAlignment = VerticalAlignment.Center,
+                Foreground = B("#1F1F1F"),
+            });
+            sp.Children.Add(new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, Foreground = B("#1F1F1F") });
+            return sp;
+        }
+
+        void DropDownRich(UIElement anchor, params (UIElement header, Action action)[] items)
+        {
+            var menu = new ContextMenu { PlacementTarget = anchor, Placement = RailMenuPlacement };
+            KeepRaised(menu);
+            foreach (var (header, action) in items)
+            {
+                var mi = new MenuItem { Header = header };
+                mi.Click += (s, e) => action();
+                menu.Items.Add(mi);
+            }
+            menu.IsOpen = true;
+        }
+
         void DropDown(UIElement anchor, params (string text, Action action)[] items)
         {
             var menu = new ContextMenu { PlacementTarget = anchor, Placement = RailMenuPlacement };
+            KeepRaised(menu);
             foreach (var (text, action) in items)
             {
                 var mi = new MenuItem { Header = text };
@@ -1820,14 +1878,14 @@ namespace NotasEscritorio
             };
             if (IsVisible) w.Owner = this; else w.WindowStartupLocation = WindowStartupLocation.CenterScreen;
 
-            var body = new StackPanel { Margin = new Thickness(26, 24, 26, 20), MaxWidth = 420, MinWidth = 320 };
+            var body = new StackPanel { Margin = new Thickness(24, 22, 24, 18), MaxWidth = 340, MinWidth = 300 };
             body.Children.Add(new TextBlock { Text = title, FontSize = 18, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Foreground = B("#1F1F1F") });
             if (!string.IsNullOrEmpty(message))
                 body.Children.Add(new TextBlock { Text = message, FontSize = 13.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0), Foreground = B("#333333") });
             if (!string.IsNullOrEmpty(detail))
                 body.Children.Add(new TextBlock { Text = detail, FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0), Foreground = B("#6B6B6B") });
 
-            var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(20, 14, 18, 16) };
+            var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(16, 14, 16, 16) };
             foreach (var (label, key, style) in buttons)
             {
                 string bg = style == 1 ? "#0F6CBD" : style == 2 ? "#C42B1C" : "#FFFFFF";
@@ -1836,8 +1894,8 @@ namespace NotasEscritorio
                 {
                     Child = new TextBlock { Text = label, FontSize = 13.5, Foreground = style == 0 ? B("#1F1F1F") : Brushes.White, HorizontalAlignment = HorizontalAlignment.Center },
                     Background = B(bg), BorderBrush = style == 0 ? B("#26000000") : B(bg), BorderThickness = new Thickness(1),
-                    CornerRadius = new CornerRadius(6), Padding = new Thickness(16, 7, 16, 8), Margin = new Thickness(8, 0, 0, 0),
-                    Cursor = Cursors.Hand, MinWidth = 100,
+                    CornerRadius = new CornerRadius(10), Padding = new Thickness(14, 7, 14, 8), Margin = new Thickness(6, 0, 0, 0),
+                    Cursor = Cursors.Hand, MinWidth = 88,
                 };
                 b.MouseEnter += (o, e) => b.Background = B(hov);
                 b.MouseLeave += (o, e) => b.Background = B(bg);
@@ -1847,19 +1905,19 @@ namespace NotasEscritorio
                 b.MouseLeftButtonUp += (o, e) => { result = k; w.Close(); };
                 btnRow.Children.Add(b);
             }
-            var footer = new Border { Background = B("#F5F5F5"), BorderBrush = B("#12000000"), BorderThickness = new Thickness(0, 1, 0, 0), CornerRadius = new CornerRadius(0, 0, 12, 12), Child = btnRow };
+            var footer = new Border { Background = B("#F5F5F5"), BorderBrush = B("#12000000"), BorderThickness = new Thickness(0, 1, 0, 0), CornerRadius = new CornerRadius(0, 0, 16, 16), Child = btnRow };
             var stack = new StackPanel();
             stack.Children.Add(body);
             stack.Children.Add(footer);
             var card = new Border
             {
-                Margin = new Thickness(18), Background = Brushes.White, CornerRadius = new CornerRadius(12),
+                Margin = new Thickness(18), Background = Brushes.White, CornerRadius = new CornerRadius(16),
                 BorderBrush = B("#1A000000"), BorderThickness = new Thickness(1), Child = stack,
                 Effect = new DropShadowEffect { BlurRadius = 26, ShadowDepth = 4, Direction = 270, Opacity = 0.25 },
             };
             card.MouseLeftButtonDown += (o, e) => { try { w.DragMove(); } catch { } };
             w.Content = card;
-            var primary = buttons.FirstOrDefault(x => x.style != 0).key ?? buttons[0].key;
+            var primary = buttons.FirstOrDefault(x => x.style == 1).key ?? buttons.FirstOrDefault(x => x.style != 0).key ?? buttons[0].key;
             var cancel = buttons.LastOrDefault(x => x.style == 0).key;
             w.KeyDown += (o, e) =>
             {
@@ -1867,6 +1925,7 @@ namespace NotasEscritorio
                 else if (e.Key == Key.Enter) { result = primary; w.Close(); }
             };
             w.ShowDialog();
+            AfterPopup();
             return result;
         }
 
@@ -2184,6 +2243,34 @@ namespace NotasEscritorio
                 e.Handled = true;
             }));
 
+            // v35: Enter dentro de una casilla crea otra casilla (igual que las viñetas); Enter en una casilla vacía quita la marca
+            rtb.PreviewKeyDown += (s, e) =>
+            {
+                if (e.Key != Key.Enter || Keyboard.Modifiers != ModifierKeys.None) return;
+                var caret = rtb.CaretPosition;
+                var para = caret?.Paragraph;
+                if (para == null) return;
+                var line = new TextRange(para.ContentStart, para.ContentEnd).Text;
+                if (!(line.StartsWith("☐") || line.StartsWith("☑"))) return;
+                int mlen = line.Length > 1 && line[1] == ' ' ? 2 : 1;
+                e.Handled = true;
+                if (line.Substring(mlen).Trim().Length == 0)
+                {
+                    // Casilla vacía: se quita la marca y se sale de la lista
+                    var st = para.ContentStart.GetInsertionPosition(LogicalDirection.Forward);
+                    var en = st.GetPositionAtOffset(mlen);
+                    if (en != null) new TextRange(st, en).Text = "";
+                    return;
+                }
+                // Lo que está después del cursor pasa a la casilla nueva
+                var rest = new TextRange(caret, para.ContentEnd);
+                var restText = rest.Text;
+                rest.Text = "";
+                var np = new Paragraph(new Run("☐ " + restText)) { Margin = para.Margin };
+                rtb.Document.Blocks.InsertAfter(para, np);
+                rtb.CaretPosition = np.ContentStart.GetPositionAtOffset(2) ?? np.ContentEnd;
+                rtb.Focus();
+            };
             // Casillas: clic sobre ☐ / ☑ para marcarla
             rtb.PreviewMouseLeftButtonUp += (s, e) =>
             {
@@ -2230,10 +2317,8 @@ namespace NotasEscritorio
         {
             if (_subtitle == null) return;
             var es = new System.Globalization.CultureInfo("es-ES");
-            var d = DateTime.Now.ToString("dddd d 'de' MMMM", es);
-            d = char.ToUpper(d[0]) + d.Substring(1);
-            int c = _notes.Count;
-            _subtitle.Text = d + "  ·  " + (c == 1 ? "1 nota" : c + " notas");
+            // v31: fecha corta dd/MM/yyyy, sin el contador de notas
+            _subtitle.Text = DateTime.Now.ToString("dd/MM/yyyy", es);
         }
 
         void Rebuild()
@@ -2571,7 +2656,7 @@ namespace NotasEscritorio
                     row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                     row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-                    var cb = new CheckBox { IsChecked = item.Done, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 3, 6, 0), Cursor = Cursors.Hand };
+                    var cb = new CheckBox { IsChecked = item.Done, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 3, 6, 0), Cursor = Cursors.Hand, Background = Brushes.Transparent };
                     var tb = new TextBox
                     {
                         Text = item.Text,
@@ -2595,7 +2680,16 @@ namespace NotasEscritorio
                     int myIdx = idx;
                     tb.PreviewKeyDown += (s, e) =>
                     {
-                        if (e.Key == Key.Enter)
+                        if (e.Key == Key.A && Keyboard.Modifiers == ModifierKeys.Control)
+                        {
+                            // v33: Ctrl+A en una lista copia todas las tareas (las casillas no se pueden seleccionar juntas)
+                            var lines = n.Items.Where(i => !string.IsNullOrWhiteSpace(i.Text))
+                                .Select(i => (i.Done ? "☑ " : "☐ ") + i.Text);
+                            try { Clipboard.SetText(string.Join(Environment.NewLine, lines)); } catch { }
+                            tb.SelectAll();
+                            e.Handled = true;
+                        }
+                        else if (e.Key == Key.Enter)
                         {
                             n.Items.Insert(myIdx + 1, new TodoItem());
                             Touch(n);
@@ -2674,6 +2768,7 @@ namespace NotasEscritorio
         void ShowColorMenu(Note n, Border card, UIElement anchor)
         {
             var menu = new ContextMenu { PlacementTarget = anchor, Placement = PlacementMode.Bottom };
+            KeepRaised(menu);
             foreach (var p in Palette)
             {
                 var sp = new StackPanel { Orientation = Orientation.Horizontal };
@@ -2704,7 +2799,7 @@ namespace NotasEscritorio
             {
                 var before = n.Color;
                 var picker = new ColorPickerWindow(ColorHex(n.Color), hex => { card.Background = NoteBrush(hex); (card.Tag as Action<string>)?.Invoke(hex); }) { Owner = this };
-                if (picker.ShowDialog() == true)
+                if (ShowAndKeep(picker) == true)
                 {
                     n.Color = picker.SelectedHex;
                     { card.Background = NoteBrush(n.Color); (card.Tag as Action<string>)?.Invoke(ColorHex(n.Color)); }
@@ -2719,6 +2814,7 @@ namespace NotasEscritorio
         void ShowNoteMenu(Note n, UIElement anchor)
         {
             var menu = new ContextMenu { PlacementTarget = anchor, Placement = PlacementMode.Bottom };
+            KeepRaised(menu);
             void Add(string text, Action a, bool enabled = true)
             {
                 var mi = new MenuItem { Header = text, IsEnabled = enabled };
@@ -2888,6 +2984,7 @@ namespace NotasEscritorio
             };
             w.KeyDown += (s, e) => { if (e.Key == Key.Escape) { result = null; w.Close(); } else if (e.Key == Key.Enter) { result = ".md"; w.Close(); } };
             w.ShowDialog();
+            AfterPopup();
             return result;
         }
 
@@ -3047,11 +3144,16 @@ namespace NotasEscritorio
         {
             if (n.IsDirty)
             {
-                var name = string.IsNullOrWhiteSpace(n.Title) ? "esta nota" : "«" + n.Title.Trim() + "»";
-                bool ok = n.FilePath == null
-                    ? Confirm("¿Quitar " + name + " del panel?", "Esta nota todavía no se ha guardado como archivo, así que se perderá su contenido.", "Si quieres conservarla, pulsa Cancelar y guárdala primero.", "Quitar nota", true)
-                    : Confirm("¿Quitar " + name + " del panel?", "Tiene cambios sin guardar que se perderán.", "El archivo " + Path.GetFileName(n.FilePath) + " no se borra: queda tal como se guardó la última vez.", "Quitar nota", true);
-                if (!ok) return;
+                // v34: arriba el nombre de la nota; abajo la pregunta; botones Guardar | Cancelar | Eliminar
+                var name = string.IsNullOrWhiteSpace(n.Title) ? "Nota sin título" : n.Title.Trim();
+                var choice = ModernDialog(name, "¿Quieres guardar la nota?", null,
+                    ("Guardar", "save", 1), ("Cancelar", "no", 0), ("Eliminar", "del", 2));
+                if (choice == "save")
+                {
+                    SaveNote(n, false);
+                    if (n.IsDirty) return; // se canceló el guardado
+                }
+                else if (choice != "del") return;
             }
             if (_cacheTimers.TryGetValue(n, out var t)) { t.Stop(); _cacheTimers.Remove(n); }
             CloseFloat(n);
@@ -3081,6 +3183,7 @@ namespace NotasEscritorio
         void ShowOptionsMenu(UIElement anchor)
         {
             var menu = new ContextMenu { PlacementTarget = anchor, Placement = RailMenuPlacement };
+            KeepRaised(menu);
             void Add(string text, Action a, bool? check = null)
             {
                 var mi = new MenuItem { Header = text };
@@ -3170,7 +3273,7 @@ namespace NotasEscritorio
                 if (!HasRich()) return;
                 var rtb = _activeRich;
                 var picker = new ColorPickerWindow(SelColorHex() ?? FontColorHex, null) { Owner = this };
-                if (picker.ShowDialog() == true) { _activeRich = rtb; ApplyToSelection(TextElement.ForegroundProperty, B(picker.SelectedHex)); }
+                if (ShowAndKeep(picker) == true) { _activeRich = rtb; ApplyToSelection(TextElement.ForegroundProperty, B(picker.SelectedHex)); }
             };
             items.Add(custom);
         }
@@ -3179,6 +3282,7 @@ namespace NotasEscritorio
         {
             if (!HasRich()) return;
             var menu = new ContextMenu { PlacementTarget = anchor, Placement = RailMenuPlacement };
+            KeepRaised(menu);
             FillTextColorItems(menu.Items);
             menu.IsOpen = true;
         }
@@ -3186,6 +3290,7 @@ namespace NotasEscritorio
         void ShowFontMenu(UIElement anchor)
         {
             var menu = new ContextMenu { PlacementTarget = anchor, Placement = RailMenuPlacement };
+            KeepRaised(menu);
             var installed = new HashSet<string>(Fonts.SystemFontFamilies.Select(f => f.Source), StringComparer.OrdinalIgnoreCase);
             foreach (var f in FontChoices.Where(f => installed.Contains(f)))
             {
@@ -3316,6 +3421,15 @@ namespace NotasEscritorio
             Reposition();
             Rebuild();
             RefreshFloats();
+            RaiseIfNeeded();
+        }
+
+        /// v40: al reconstruir la ventana Windows puede activar otra app; si el panel estaba al frente, se vuelve a traer
+        void RaiseIfNeeded()
+        {
+            if (!_raise || _hwnd == IntPtr.Zero) return;
+            Native.SetWindowPos(_hwnd, Native.HWND_TOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE);
+            Activate();
         }
 
         void ShowOpacityDialog()
@@ -3394,6 +3508,7 @@ namespace NotasEscritorio
             w.Content = card;
             w.KeyDown += (o, e) => { if (e.Key == Key.Escape) Cancel(); else if (e.Key == Key.Enter) Accept(); };
             w.ShowDialog();
+            AfterPopup();
         }
 
         /// Reinicia la app (necesario para pasar de/a un tema transparente)
@@ -3432,6 +3547,7 @@ namespace NotasEscritorio
     public class ColorPickerWindow : Window
     {
         public string SelectedHex { get; private set; }
+        static SolidColorBrush B(string hex) => (SolidColorBrush)new BrushConverter().ConvertFromString(hex);
         double _h, _s, _v; // tono 0-360, saturación y brillo 0-1
         readonly Action<string> _preview;
         readonly System.Windows.Shapes.Rectangle _hueFill;
@@ -3445,12 +3561,13 @@ namespace NotasEscritorio
         {
             _preview = preview;
             Title = "Color personalizado";
-            WindowStyle = WindowStyle.ToolWindow;
+            WindowStyle = WindowStyle.None;
+            AllowsTransparency = true;
+            Background = Brushes.Transparent;
             ResizeMode = ResizeMode.NoResize;
             SizeToContent = SizeToContent.WidthAndHeight;
             WindowStartupLocation = WindowStartupLocation.CenterOwner;
             ShowInTaskbar = false;
-            Background = new SolidColorBrush(Color.FromRgb(0xF3, 0xF3, 0xF3));
             FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
 
             var c = (Color)ColorConverter.ConvertFromString(initialHex);
@@ -3480,10 +3597,10 @@ namespace NotasEscritorio
 
             void HueAt(Point p) { _h = Math.Clamp(1 - p.Y / HueH, 0, 1) * 360; Update(); }
             void SvAt(Point p) { _s = Math.Clamp(1 - p.X / SV, 0, 1); _v = Math.Clamp(1 - p.Y / SV, 0, 1); Update(); }
-            hueCanvas.MouseLeftButtonDown += (o, e) => { hueCanvas.CaptureMouse(); HueAt(e.GetPosition(hueCanvas)); };
+            hueCanvas.MouseLeftButtonDown += (o, e) => { hueCanvas.CaptureMouse(); HueAt(e.GetPosition(hueCanvas)); e.Handled = true; };
             hueCanvas.MouseMove += (o, e) => { if (hueCanvas.IsMouseCaptured) HueAt(e.GetPosition(hueCanvas)); };
             hueCanvas.MouseLeftButtonUp += (o, e) => hueCanvas.ReleaseMouseCapture();
-            svCanvas.MouseLeftButtonDown += (o, e) => { svCanvas.CaptureMouse(); SvAt(e.GetPosition(svCanvas)); };
+            svCanvas.MouseLeftButtonDown += (o, e) => { svCanvas.CaptureMouse(); SvAt(e.GetPosition(svCanvas)); e.Handled = true; };
             svCanvas.MouseMove += (o, e) => { if (svCanvas.IsMouseCaptured) SvAt(e.GetPosition(svCanvas)); };
             svCanvas.MouseLeftButtonUp += (o, e) => svCanvas.ReleaseMouseCapture();
 
@@ -3505,9 +3622,23 @@ namespace NotasEscritorio
                     Update(fromHex: true);
                 }
             };
-            var ok = new Button { Content = "Aceptar", Padding = new Thickness(14, 4, 14, 4), Margin = new Thickness(8, 0, 0, 0), IsDefault = true };
-            ok.Click += (o, e) => { SelectedHex = CurrentHex(); DialogResult = true; };
-            var cancel = new Button { Content = "Cancelar", Padding = new Thickness(14, 4, 14, 4), Margin = new Thickness(8, 0, 0, 0), IsCancel = true };
+            Border PillBtn(string text, bool primary, Action click)
+            {
+                var fg = primary ? "#FFFFFF" : "#1F1F1F";
+                var bg = primary ? "#0F6CBD" : "#FFFFFF";
+                var b = new Border
+                {
+                    Child = new TextBlock { Text = text, FontSize = 13.5, Foreground = B(fg), HorizontalAlignment = HorizontalAlignment.Center },
+                    Background = B(bg), BorderBrush = primary ? B(bg) : B("#26000000"), BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(10), Padding = new Thickness(16, 7, 16, 8), Margin = new Thickness(8, 0, 0, 0),
+                    Cursor = Cursors.Hand, MinWidth = 96,
+                };
+                b.MouseLeftButtonDown += (o, e) => e.Handled = true;
+                b.MouseLeftButtonUp += (o, e) => { click(); e.Handled = true; };
+                return b;
+            }
+            var ok = PillBtn("Aceptar", true, () => { SelectedHex = CurrentHex(); DialogResult = true; });
+            var cancel = PillBtn("Cancelar", false, () => DialogResult = false);
 
             var bottom = new DockPanel { Margin = new Thickness(0, 14, 0, 0) };
             var right = new StackPanel { Orientation = Orientation.Horizontal };
@@ -3518,10 +3649,27 @@ namespace NotasEscritorio
             left.Children.Add(_swatch); left.Children.Add(_hexBox);
             bottom.Children.Add(left);
 
-            var root = new StackPanel { Margin = new Thickness(16) };
-            root.Children.Add(pickers);
-            root.Children.Add(bottom);
-            Content = root;
+            var heading = new TextBlock { Text = "Color personalizado", FontSize = 16, FontWeight = FontWeights.SemiBold, Foreground = B("#1F1F1F"), Margin = new Thickness(0, 0, 0, 12) };
+            // Se arrastra desde el título o desde cualquier parte que no sea un control
+            void Drag(object o, MouseButtonEventArgs e) { if (!e.Handled) { try { DragMove(); } catch { } } }
+            heading.MouseLeftButtonDown += Drag;
+            var inner = new StackPanel { Margin = new Thickness(20, 18, 20, 16) };
+            inner.Children.Add(heading);
+            inner.Children.Add(pickers);
+            inner.Children.Add(bottom);
+            var card = new Border
+            {
+                Margin = new Thickness(16), Background = Brushes.White, CornerRadius = new CornerRadius(16),
+                BorderBrush = B("#1A000000"), BorderThickness = new Thickness(1), Child = inner,
+                Effect = new DropShadowEffect { BlurRadius = 26, ShadowDepth = 4, Direction = 270, Opacity = 0.25 },
+            };
+            card.MouseLeftButtonDown += Drag;
+            KeyDown += (o, e) =>
+            {
+                if (e.Key == Key.Escape) DialogResult = false;
+                else if (e.Key == Key.Enter) { SelectedHex = CurrentHex(); DialogResult = true; }
+            };
+            Content = card;
             Update();
         }
 

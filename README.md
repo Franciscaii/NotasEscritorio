@@ -1,6 +1,19 @@
+<div align="center">
+
+<img src="docs/icono.png" width="128" alt="Icono de Notas Escritorio">
+
 # Notas Escritorio
 
-Panel de notas tipo **widget** para Windows 11. Vive pegado a un lado del escritorio, por debajo de las demás ventanas, y nunca tapa la barra de tareas.
+Tus notas como widget en el escritorio de Windows 11.<br>
+Quedan por debajo de las demás ventanas y nunca tapan la barra de tareas.
+
+[![versión](https://img.shields.io/badge/versi%C3%B3n-43-6D3FE0)](https://github.com/Franciscaii/APP_Notas_Escritorio/blob/main/NotasEscritorio-v43.exe)
+[![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)](#dónde-está-el-exe)
+[![.NET](https://img.shields.io/badge/.NET-8-512BD4)](#compilar)
+
+</div>
+
+---
 
 | Dato | Valor |
 |---|---|
@@ -8,6 +21,12 @@ Panel de notas tipo **widget** para Windows 11. Vive pegado a un lado del escrit
 | Instalación | Ninguna: un solo `.exe` |
 | Formato de las notas | `.txt` (texto plano) y `.md` (con formato) |
 | Tecnología | C# · .NET 8 · WPF (sin XAML, todo en `src/Program.cs`) |
+
+## Video
+
+Mira la app funcionando en el PC: [▶️ Ver el video en YouTube](https://youtu.be/bbt7eunLImk)
+
+---
 
 ## Características principales
 
@@ -116,11 +135,20 @@ La barra queda siempre en el lado interior del panel.
 | `Ctrl+K` | Insertar enlace |
 | `Ctrl+B` / `Ctrl+I` | Negrita / cursiva |
 
+## Dónde está el `.exe`
+
+| Dónde | Ruta |
+|---|---|
+| En GitHub | [`NotasEscritorio-v43.exe`](https://github.com/Franciscaii/APP_Notas_Escritorio/blob/main/NotasEscritorio-v43.exe) (raíz del repositorio) |
+| En el PC de Francisca | `C:\Users\franc\Documents\Clones GitHub\NotasEscritorio\NotasEscritorio-v43.exe` |
+
+> Descarga el `.exe` desde GitHub con el botón **Download raw file** (o clic derecho → *Guardar enlace como…*). No necesitas nada más.
+
 ## Uso
 
 | Paso | Qué hacer |
 |---|---|
-| 1. Abrir | Doble clic en el `.exe` más reciente de esta carpeta |
+| 1. Abrir | Doble clic en `NotasEscritorio-v43.exe` |
 | 2. Aviso de Windows | Si aparece "Windows protegió tu PC": **Más información → Ejecutar de todas formas** |
 | 3. Anclar | Clic derecho en el `.exe` → Mostrar más opciones → **Anclar a la barra de tareas** |
 | 4. Icono anclado | Primer clic trae el panel al frente; segundo clic lo manda al fondo |
@@ -143,7 +171,7 @@ No usa variables de entorno ni conexión a internet.
 
 | Ruta | Contenido |
 |---|---|
-| `NotasEscritorio-vN.exe` | Versiones de la app (la de número más alto es la más reciente) |
+| `NotasEscritorio-v43.exe` | Versión actual de la app. Las anteriores están en el historial de Git |
 | `src\Program.cs` | Todo el código |
 | `src\NotasEscritorio.csproj` | Proyecto .NET |
 | `src\app.ico` | Icono |
